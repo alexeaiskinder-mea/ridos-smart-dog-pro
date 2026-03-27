@@ -64,7 +64,9 @@ jobs:
             live-boot live-boot-initramfs-tools \
             linux-image-amd64 initramfs-tools \
             grub-pc grub-pc-bin grub2-common grub-common \
-            grub-efi-amd64-bin efibootmgr os-prober \
+            grub-efi-amd64-bin grub-efi-amd64-signed \
+            shim-signed shim-helpers-amd64-signed \
+            efibootmgr os-prober \
             bash-completion tzdata locales
 
       - name: Install hardware drivers
@@ -250,6 +252,27 @@ jobs:
           sudo python3 build-system/scripts/apply-branding.py
           echo "✅ Branding applied"
 
+      # ─────────────────────────────────────────────────────────────
+      # نسخ الصورة — خلفية سطح المكتب
+      # ضع الصورة في: assets/image_0.png  داخل الـ repository
+      # ─────────────────────────────────────────────────────────────
+      - name: Copy custom wallpaper
+        run: |
+          sudo mkdir -p chroot/usr/share/ridos/wallpapers
+          if [ -f assets/image_0.png ]; then
+            sudo cp assets/image_0.png chroot/usr/share/ridos/wallpapers/ridos-wallpaper.png
+            echo "✅ Wallpaper copied from assets/image_0.png"
+          elif [ -f image_0.png ]; then
+            sudo cp image_0.png chroot/usr/share/ridos/wallpapers/ridos-wallpaper.png
+            echo "✅ Wallpaper copied from image_0.png"
+          else
+            echo "⚠ image_0.png not found — generating purple fallback"
+            sudo apt-get install -y imagemagick -qq 2>/dev/null || true
+            convert -size 1920x1080 xc:"#1a0a2e" \
+              -fill "#6B21A8" -draw "rectangle 0,1060 1920,1080" \
+              chroot/usr/share/ridos/wallpapers/ridos-wallpaper.png 2>/dev/null || true
+          fi
+
       - name: Install RIDOS core files
         run: |
           sudo mkdir -p chroot/opt/ridos/bin
@@ -330,13 +353,32 @@ jobs:
             -p "/boot/grub" iso9660 linux normal biosdisk search
           cat /usr/lib/grub/i386-pc/cdboot.img bios.core.img > bios.img
 
-          grub-mkimage -O x86_64-efi -o bootx64.efi \
-            -p "/boot/grub" iso9660 linux normal search
-
+          # ── UEFI Secure Boot — استخدام shim الموقَّع من Microsoft ──
+          # هذا يجعل النظام يعمل بدون الحاجة لتعطيل Secure Boot في BIOS
           dd if=/dev/zero of=efi.img bs=1M count=10 status=none
           mkfs.vfat -F 12 efi.img
-          mmd -i efi.img ::/EFI ::/EFI/boot
-          mcopy -i efi.img bootx64.efi ::/EFI/boot/bootx64.efi
+          mmd -i efi.img ::/EFI ::/EFI/boot ::/EFI/debian
+
+          # البحث عن shim الموقَّع من Debian (مُثبَّت داخل chroot)
+          SHIM_SRC=$(find chroot/usr/lib/shim -name "shimx64.efi.signed" 2>/dev/null | head -1)
+          GRUB_SRC=$(find chroot/usr/lib/grub -name "grubx64.efi.signed" 2>/dev/null | head -1)
+          SHIM_MM=$(find chroot/usr/lib/shim -name "mmx64.efi" 2>/dev/null | head -1)
+
+          if [ -n "$SHIM_SRC" ]; then
+            echo "✅ Using signed shim for Secure Boot compatibility"
+            mcopy -i efi.img "$SHIM_SRC"    ::/EFI/boot/bootx64.efi
+            mcopy -i efi.img "$GRUB_SRC"    ::/EFI/boot/grubx64.efi   2>/dev/null || true
+            [ -n "$SHIM_MM" ] && mcopy -i efi.img "$SHIM_MM" ::/EFI/boot/mmx64.efi || true
+          else
+            echo "⚠ shim not found — falling back to unsigned GRUB EFI"
+            grub-mkimage -O x86_64-efi -o bootx64.efi \
+              -p "/boot/grub" iso9660 linux normal search
+            mcopy -i efi.img bootx64.efi ::/EFI/boot/bootx64.efi
+          fi
+
+          # نسخ GRUB config إلى EFI partition أيضاً
+          mcopy -i efi.img iso/boot/grub/grub.cfg ::/EFI/boot/grub.cfg 2>/dev/null || true
+
 
           mkdir -p iso/boot/grub/i386-pc
           cp /usr/lib/grub/i386-pc/*.mod iso/boot/grub/i386-pc/ 2>/dev/null || true
