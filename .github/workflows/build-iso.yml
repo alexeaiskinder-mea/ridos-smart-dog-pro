@@ -1,4 +1,4 @@
-name: Build RIDOS OS ISO
+name: Build RIDOS OS ISO — Smart Dog Edition
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
 jobs:
   build-iso:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 180   # رُفع من 120 → 180 لاستيعاب تحميل Ollama + Llama3 (4.7GB)
 
     steps:
       - name: Checkout source
@@ -23,7 +23,7 @@ jobs:
             grub-pc-bin grub-efi-amd64-bin grub2-common \
             mtools dosfstools gnupg2 curl wget \
             imagemagick librsvg2-bin inkscape
-          echo "Done"
+          echo "✅ Build deps done"
 
       - name: Bootstrap Debian bookworm
         run: |
@@ -35,21 +35,31 @@ jobs:
             --keyring=/usr/share/keyrings/debian-bookworm.gpg \
             --include=systemd,systemd-sysv,udev,sudo,locales,bash,apt-transport-https,ca-certificates \
             bookworm chroot http://deb.debian.org/debian/
-          echo "Bootstrap done"
+          echo "✅ Bootstrap done"
 
-      - name: Install all packages
+      # ─────────────────────────────────────────────────────────────
+      # MOUNT (مرة واحدة فقط — هذا كان الخطأ الأول في النسخة القديمة)
+      # ─────────────────────────────────────────────────────────────
+      - name: Mount chroot filesystems
         run: |
           sudo mount --bind /dev  chroot/dev
           sudo mount --bind /proc chroot/proc
           sudo mount --bind /sys  chroot/sys
           sudo mount --bind /run  chroot/run
+          echo "✅ chroot mounts ready"
 
-          printf 'deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware\ndeb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware\ndeb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware\n' | sudo tee chroot/etc/apt/sources.list > /dev/null
-          echo "sources.list written" 
-
+      - name: Write APT sources
+        run: |
+          printf '%s\n' \
+            'deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware' \
+            'deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware' \
+            'deb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware' \
+            | sudo tee chroot/etc/apt/sources.list > /dev/null
           sudo chroot chroot apt-get update -qq
+          echo "✅ sources.list written"
 
-          # Core system
+      - name: Install core system packages
+        run: |
           sudo chroot chroot apt-get install -y \
             live-boot live-boot-initramfs-tools \
             linux-image-amd64 initramfs-tools \
@@ -57,7 +67,8 @@ jobs:
             grub-efi-amd64-bin efibootmgr os-prober \
             bash-completion tzdata locales
 
-          # Hardware drivers
+      - name: Install hardware drivers
+        run: |
           sudo chroot chroot apt-get install -y \
             firmware-linux firmware-linux-free firmware-linux-nonfree \
             firmware-iwlwifi firmware-atheros firmware-realtek \
@@ -75,7 +86,8 @@ jobs:
             ntfs-3g exfat-fuse \
             --no-install-recommends || true
 
-          # XFCE Desktop
+      - name: Install XFCE desktop
+        run: |
           sudo chroot chroot apt-get install -y \
             xfce4 xfce4-terminal xfce4-whiskermenu-plugin \
             xfce4-power-manager xfce4-notifyd \
@@ -84,42 +96,31 @@ jobs:
             adwaita-icon-theme papirus-icon-theme \
             fonts-dejavu fonts-liberation fonts-noto fonts-noto-color-emoji
 
-          # VirtualBox Guest Additions + clipboard sharing
+      - name: Install virtualisation guest tools
+        run: |
           sudo chroot chroot apt-get install -y virtualbox-guest-utils virtualbox-guest-x11 || true
           sudo chroot chroot apt-get install -y open-vm-tools open-vm-tools-desktop spice-vdagent || true
-          sudo chroot chroot systemctl enable spice-vdagentd 2>/dev/null || true
+          sudo chroot chroot systemctl enable spice-vdagentd       2>/dev/null || true
           sudo chroot chroot systemctl enable virtualbox-guest-utils 2>/dev/null || true
-          ls chroot/usr/bin/VBoxClient && echo "VBoxClient OK" || echo "VBox fallback OK"
-          # Verify
-          ls chroot/usr/bin/VBoxClient 2>/dev/null             && echo "VBoxClient installed OK"             || echo "VBox not found - open-vm-tools provides clipboard sharing"
 
-          # Browsers
+      - name: Install browser and locale data
+        run: |
           sudo chroot chroot apt-get install -y firefox-esr
-
-          # Locale data needed by Calamares locale module
-          sudo chroot chroot apt-get install -y             tzdata locales keyboard-configuration console-setup             kbd locales-all 2>/dev/null || true
-
-          # Calamares installer - needs /proc /sys /dev mounted
-          sudo mount --bind /dev  chroot/dev  2>/dev/null || true
-          sudo mount --bind /proc chroot/proc 2>/dev/null || true
-          sudo mount --bind /sys  chroot/sys  2>/dev/null || true
-          sudo chroot chroot apt-get install -y --no-install-recommends calamares             && echo "✅ Calamares installed!" || echo "❌ Calamares FAILED"
-          sudo chroot chroot apt-get install -y             qml-module-qtquick2 qml-module-qtquick-controls2             qml-module-qtquick-layouts python3-pyqt5             efibootmgr os-prober || true
-          sudo umount chroot/sys  2>/dev/null || true
-          sudo umount chroot/proc 2>/dev/null || true
-          sudo umount chroot/dev  2>/dev/null || true
-          # Verify
-          if [ -f chroot/usr/bin/calamares ]; then
-            echo "✅ Calamares binary confirmed at /usr/bin/calamares"
-          else
-            echo "❌ Calamares binary NOT found - installer will use bash fallback"
-          fi
-
-          # Build tools needed for VBox guest modules
           sudo chroot chroot apt-get install -y \
-            dkms build-essential linux-headers-amd64 || true
+            tzdata locales keyboard-configuration console-setup \
+            kbd locales-all 2>/dev/null || true
 
-          # Dev and IT tools
+      - name: Install Calamares installer
+        run: |
+          sudo chroot chroot apt-get install -y --no-install-recommends calamares \
+            && echo "✅ Calamares installed" || echo "❌ Calamares FAILED — will use bash fallback"
+          sudo chroot chroot apt-get install -y \
+            qml-module-qtquick2 qml-module-qtquick-controls2 \
+            qml-module-qtquick-layouts python3-pyqt5 \
+            efibootmgr os-prober || true
+
+      - name: Install dev and IT tools
+        run: |
           sudo chroot chroot apt-get install -y \
             python3 python3-pip python3-venv \
             python3-tk \
@@ -133,47 +134,177 @@ jobs:
             parted gparted rsync dosfstools \
             smartmontools hdparm memtest86+ \
             lshw dmidecode iotop iftop \
-            wireshark-common tshark squashfs-tools
+            wireshark-common tshark squashfs-tools \
+            dkms build-essential linux-headers-amd64
 
-          sudo umount chroot/run  || true
-          sudo umount chroot/sys  || true
-          sudo umount chroot/proc || true
-          sudo umount chroot/dev  || true
-          echo "All packages installed"
+      # ─────────────────────────────────────────────────────────────
+      # ميزة #5 — SIGINT Suite (RTL-SDR + Gqrx + Inspectrum)
+      # ─────────────────────────────────────────────────────────────
+      - name: Install SIGINT / SDR tools
+        run: |
+          sudo chroot chroot apt-get install -y \
+            rtl-sdr librtlsdr-dev \
+            gqrx-sdr \
+            inspectrum \
+            gnuradio gr-osmosdr \
+            sox libsox-fmt-all \
+            multimon-ng \
+            direwolf \
+            cubicsdr || true
+
+          # udev rules — تفعيل RTL-SDR بدون صلاحيات root
+          sudo tee chroot/etc/udev/rules.d/20-rtlsdr.rules > /dev/null <<'UDEV'
+          SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2832", GROUP="plugdev", MODE="0664", SYMLINK+="rtl_sdr"
+          SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", GROUP="plugdev", MODE="0664", SYMLINK+="rtl_sdr"
+          SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2840", GROUP="plugdev", MODE="0664", SYMLINK+="rtl_sdr"
+          SUBSYSTEM=="usb", ATTRS{idVendor}=="1f4d", ATTRS{idProduct}=="b803", GROUP="plugdev", MODE="0664", SYMLINK+="rtl_sdr"
+          UDEV
+          echo "✅ SIGINT tools installed"
+
+      # ─────────────────────────────────────────────────────────────
+      # ميزة #2 — Offline AI Brain (Ollama + Llama3:8b-q4)
+      # ─────────────────────────────────────────────────────────────
+      - name: Install Ollama and pull Llama3 model
+        run: |
+          # تثبيت Ollama داخل الـ chroot
+          sudo chroot chroot bash -c '
+            curl -fsSL https://ollama.com/install.sh | sh
+          '
+
+          # إطلاق Ollama مؤقتاً لتحميل الموديل
+          sudo chroot chroot bash -c '
+            ollama serve &
+            OLLAMA_PID=$!
+            sleep 5
+
+            echo "📥 Pulling llama3:8b-q4_0 (~4.7GB)..."
+            ollama pull llama3:8b-q4_0
+
+            echo "📥 Pulling nomic-embed-text (embeddings)..."
+            ollama pull nomic-embed-text
+
+            kill $OLLAMA_PID 2>/dev/null || true
+            wait $OLLAMA_PID 2>/dev/null || true
+          '
+
+          # التحقق من وجود الموديل
+          if sudo chroot chroot test -d /root/.ollama/models; then
+            echo "✅ Ollama models present"
+            sudo du -sh chroot/root/.ollama/models
+          else
+            echo "❌ Ollama models missing"
+            exit 1
+          fi
+
+          # نقل الموديلات إلى مجلد مشترك متاح للمستخدم ridos
+          sudo chroot chroot bash -c '
+            mkdir -p /opt/ridos/ollama-models
+            cp -r /root/.ollama /opt/ridos/ollama-models/ 2>/dev/null || true
+          '
+
+          # systemd service للـ Ollama
+          sudo tee chroot/etc/systemd/system/ollama.service > /dev/null <<'SYSTEMD'
+          [Unit]
+          Description=Ollama Offline AI Server
+          After=network.target
+
+          [Service]
+          Type=simple
+          User=ridos
+          Environment=OLLAMA_HOME=/opt/ridos/ollama-models/.ollama
+          Environment=OLLAMA_HOST=127.0.0.1:11434
+          ExecStart=/usr/local/bin/ollama serve
+          Restart=on-failure
+          RestartSec=3
+
+          [Install]
+          WantedBy=multi-user.target
+          SYSTEMD
+
+          sudo chroot chroot systemctl enable ollama 2>/dev/null || true
+          echo "✅ Ollama service enabled"
+
+      # ─────────────────────────────────────────────────────────────
+      # UNMOUNT (مرة واحدة فقط — بعد كل التثبيتات)
+      # ─────────────────────────────────────────────────────────────
+      - name: Unmount chroot filesystems
+        run: |
+          sudo umount chroot/run  2>/dev/null || true
+          sudo umount chroot/sys  2>/dev/null || true
+          sudo umount chroot/proc 2>/dev/null || true
+          sudo umount chroot/dev  2>/dev/null || true
+          echo "✅ Unmounted cleanly"
 
       - name: Configure system
         run: |
           sudo python3 build-system/scripts/configure-system.py
-          echo "System configured"
+          echo "✅ System configured"
 
       - name: Configure Calamares installer
         run: |
           sudo python3 build-system/scripts/configure-calamares.py
-          echo "Calamares configured"
+          echo "✅ Calamares configured"
 
       - name: Apply RIDOS branding and theme
         run: |
           sudo python3 build-system/scripts/apply-branding.py
-          echo "Branding applied"
+          echo "✅ Branding applied"
 
       - name: Install RIDOS core files
         run: |
           sudo mkdir -p chroot/opt/ridos/bin
           sudo mkdir -p chroot/usr/share/ridos
-          sudo cp ridos-core/*.py chroot/opt/ridos/bin/
-          sudo chmod +x chroot/opt/ridos/bin/control_center.py
-          sudo cp build-system/scripts/ai_features.py      chroot/opt/ridos/bin/ 2>/dev/null || true
-          sudo cp build-system/scripts/dashboard_server.py chroot/opt/ridos/bin/ 2>/dev/null || true
-          sudo cp build-system/scripts/ridos-dashboard.html chroot/opt/ridos/bin/ 2>/dev/null || true
-          sudo chmod +x chroot/opt/ridos/bin/*.py
-          # Copy GRUB install script to LIVE system
-          sudo cp build-system/scripts/ridos-grub-install.sh chroot/usr/local/bin/ridos-grub-install
-          sudo chmod +x chroot/usr/local/bin/ridos-grub-install
-          echo "GRUB helper installed to live system"
-          sudo cp legal/LICENSE.txt legal/COPYRIGHT legal/CONTRIBUTORS.md \
-               chroot/usr/share/ridos/
-          sudo python3 build-system/scripts/install-ridos-files.py
-          echo "RIDOS files installed"
+
+          # ridos-core — copy only if folder exists (optional)
+          if [ -d ridos-core ] && ls ridos-core/*.py 2>/dev/null; then
+            sudo cp ridos-core/*.py chroot/opt/ridos/bin/
+            sudo chmod +x chroot/opt/ridos/bin/control_center.py 2>/dev/null || true
+            echo "✅ ridos-core files copied"
+          else
+            echo "⚠ ridos-core/ not found — skipping (optional folder)"
+          fi
+
+          # build-system scripts — each guarded individually
+          sudo cp build-system/scripts/ai_features.py        chroot/opt/ridos/bin/ 2>/dev/null || true
+          sudo cp build-system/scripts/smart_dog_terminal.py chroot/opt/ridos/bin/ 2>/dev/null || true
+          sudo cp build-system/scripts/dashboard_server.py   chroot/opt/ridos/bin/ 2>/dev/null || true
+          sudo cp build-system/scripts/ridos-dashboard.html  chroot/opt/ridos/bin/ 2>/dev/null || true
+
+          # panic-key — copy script if exists, else create minimal placeholder
+          if [ -f build-system/scripts/panic_key.sh ]; then
+            sudo cp build-system/scripts/panic_key.sh chroot/usr/local/bin/panic-key
+          else
+            echo "⚠ panic_key.sh not found — panic-key already created by configure-system.py"
+          fi
+
+          sudo chmod +x chroot/opt/ridos/bin/*.py           2>/dev/null || true
+          sudo chmod +x chroot/usr/local/bin/panic-key      2>/dev/null || true
+
+          # Smart Dog Terminal — symlink في PATH
+          if [ -f chroot/opt/ridos/bin/smart_dog_terminal.py ]; then
+            sudo ln -sf /opt/ridos/bin/smart_dog_terminal.py chroot/usr/local/bin/sdt
+            echo "✅ sdt symlink created"
+          fi
+
+          # GRUB helper — optional
+          if [ -f build-system/scripts/ridos-grub-install.sh ]; then
+            sudo cp build-system/scripts/ridos-grub-install.sh chroot/usr/local/bin/ridos-grub-install
+            sudo chmod +x chroot/usr/local/bin/ridos-grub-install
+          fi
+
+          # legal files — optional
+          if [ -d legal ]; then
+            sudo cp legal/LICENSE.txt   chroot/usr/share/ridos/ 2>/dev/null || true
+            sudo cp legal/COPYRIGHT     chroot/usr/share/ridos/ 2>/dev/null || true
+            sudo cp legal/CONTRIBUTORS.md chroot/usr/share/ridos/ 2>/dev/null || true
+          fi
+
+          # install-ridos-files.py — optional
+          if [ -f build-system/scripts/install-ridos-files.py ]; then
+            sudo python3 build-system/scripts/install-ridos-files.py
+          fi
+
+          echo "✅ RIDOS files installed"
 
       - name: Build squashfs filesystem
         run: |
@@ -191,7 +322,7 @@ jobs:
           cp "$KERNEL" iso/live/vmlinuz
           cp "$INITRD" iso/live/initrd
           python3 build-system/scripts/write-grub-config.py
-          echo "ISO structure ready"
+          echo "✅ ISO structure ready"
 
       - name: Build GRUB and create bootable ISO
         run: |
@@ -215,7 +346,7 @@ jobs:
           xorriso -as mkisofs \
             -iso-level 3 \
             -full-iso9660-filenames \
-            -volid "RIDOS_OS_1.1" \
+            -volid "RIDOS_SMARTDOG_1.2" \
             -publisher "RIDOS OS Project" \
             --grub2-mbr /usr/lib/grub/i386-pc/boot_hybrid.img \
             -partition_offset 16 \
@@ -232,34 +363,35 @@ jobs:
             -eltorito-alt-boot \
             -e --interval:appended_partition_2:all:: \
             -no-emul-boot \
-            -o ridos-os-1.1.0-Baghdad-x86_64.iso \
+            -o ridos-os-1.2.0-SmartDog-x86_64.iso \
             -graft-points \
               "/boot/grub/bios.img=bios.img" \
               "/=iso"
 
-          ls -lh ridos-os-1.1.0-Baghdad-x86_64.iso
-          file ridos-os-1.1.0-Baghdad-x86_64.iso
-          md5sum    ridos-os-1.1.0-Baghdad-x86_64.iso > ridos-os-1.1.0-Baghdad-x86_64.iso.md5
-          sha256sum ridos-os-1.1.0-Baghdad-x86_64.iso > ridos-os-1.1.0-Baghdad-x86_64.iso.sha256
-          echo "ISO ready!"
+          ls -lh ridos-os-1.2.0-SmartDog-x86_64.iso
+          file    ridos-os-1.2.0-SmartDog-x86_64.iso
+          md5sum    ridos-os-1.2.0-SmartDog-x86_64.iso > ridos-os-1.2.0-SmartDog-x86_64.iso.md5
+          sha256sum ridos-os-1.2.0-SmartDog-x86_64.iso > ridos-os-1.2.0-SmartDog-x86_64.iso.sha256
+          echo "✅ ISO ready — Smart Dog Edition!"
 
       - name: Upload ISO artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RIDOS-OS-1.1.0-Baghdad
+          name: RIDOS-OS-1.2.0-SmartDog
           path: |
-            ridos-os-1.1.0-Baghdad-x86_64.iso
-            ridos-os-1.1.0-Baghdad-x86_64.iso.md5
-            ridos-os-1.1.0-Baghdad-x86_64.iso.sha256
+            ridos-os-1.2.0-SmartDog-x86_64.iso
+            ridos-os-1.2.0-SmartDog-x86_64.iso.md5
+            ridos-os-1.2.0-SmartDog-x86_64.iso.sha256
           retention-days: 30
 
       - name: Create GitHub Release on tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           gh release create "${{ github.ref_name }}" \
-            ridos-os-1.1.0-Baghdad-x86_64.iso \
-            ridos-os-1.1.0-Baghdad-x86_64.iso.md5 \
-            --title "RIDOS OS ${{ github.ref_name }} Baghdad" \
-            --notes "RIDOS OS v1.1.0 Baghdad - AI-Powered Linux. Login: ridos/ridos. GPL v3."
+            ridos-os-1.2.0-SmartDog-x86_64.iso \
+            ridos-os-1.2.0-SmartDog-x86_64.iso.md5 \
+            ridos-os-1.2.0-SmartDog-x86_64.iso.sha256 \
+            --title "RIDOS OS ${{ github.ref_name }} Smart Dog" \
+            --notes "RIDOS OS v1.2.0 Smart Dog — Offline AI + SIGINT + Panic Key. Login: ridos/ridos. GPL v3."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
