@@ -1,4 +1,4 @@
-name: Build RIDOS OS ISO - v1.2.0
+name: Build RIDOS OS ISO
 
 on:
   push:
@@ -22,7 +22,7 @@ jobs:
             debootstrap squashfs-tools xorriso \
             grub-pc-bin grub-efi-amd64-bin grub2-common \
             mtools dosfstools gnupg2 curl wget \
-            imagemagick librsvg2-bin inkscape
+            imagemagick librsvg2-bin
           echo "Done"
 
       - name: Bootstrap Debian bookworm
@@ -33,7 +33,7 @@ jobs:
             --arch=amd64 \
             --variant=minbase \
             --keyring=/usr/share/keyrings/debian-bookworm.gpg \
-            --include=systemd,systemd-sysv,udev,sudo,locales,bash,apt-transport-https,ca-certificates \
+            --include=systemd,systemd-sysv,udev,sudo,locales,bash \
             bookworm chroot http://deb.debian.org/debian/
           echo "Bootstrap done"
 
@@ -45,21 +45,15 @@ jobs:
           sudo mount --bind /run  chroot/run
 
           printf 'deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware\ndeb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware\ndeb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware\n' | sudo tee chroot/etc/apt/sources.list > /dev/null
-          echo "sources.list written" 
-
           sudo chroot chroot apt-get update -qq
 
-          # Core system
           sudo chroot chroot apt-get install -y \
             live-boot live-boot-initramfs-tools \
             linux-image-amd64 initramfs-tools \
             grub-pc grub-pc-bin grub2-common grub-common \
-            grub-efi-amd64-bin grub-efi-amd64-signed \
-            shim-signed \
-            efibootmgr os-prober \
+            grub-efi-amd64-bin efibootmgr os-prober \
             bash-completion tzdata locales
 
-          # Hardware drivers
           sudo chroot chroot apt-get install -y \
             firmware-linux firmware-linux-free firmware-linux-nonfree \
             firmware-iwlwifi firmware-atheros firmware-realtek \
@@ -77,7 +71,6 @@ jobs:
             ntfs-3g exfat-fuse \
             --no-install-recommends || true
 
-          # XFCE Desktop
           sudo chroot chroot apt-get install -y \
             xfce4 xfce4-terminal xfce4-whiskermenu-plugin \
             xfce4-power-manager xfce4-notifyd \
@@ -86,45 +79,21 @@ jobs:
             adwaita-icon-theme papirus-icon-theme \
             fonts-dejavu fonts-liberation fonts-noto fonts-noto-color-emoji
 
-          # VirtualBox Guest Additions + clipboard sharing
-          sudo chroot chroot apt-get install -y virtualbox-guest-utils virtualbox-guest-x11 || true
-          sudo chroot chroot apt-get install -y open-vm-tools open-vm-tools-desktop spice-vdagent || true
-          sudo chroot chroot systemctl enable spice-vdagentd 2>/dev/null || true
-          sudo chroot chroot systemctl enable virtualbox-guest-utils 2>/dev/null || true
-          ls chroot/usr/bin/VBoxClient && echo "VBoxClient OK" || echo "VBox fallback OK"
-          # Verify
-          ls chroot/usr/bin/VBoxClient 2>/dev/null             && echo "VBoxClient installed OK"             || echo "VBox not found - open-vm-tools provides clipboard sharing"
+          sudo chroot chroot apt-get install -y \
+            virtualbox-guest-utils virtualbox-guest-x11 || true
+          sudo chroot chroot apt-get install -y \
+            open-vm-tools open-vm-tools-desktop spice-vdagent || true
 
-          # Browsers
           sudo chroot chroot apt-get install -y firefox-esr
 
-          # Locale data needed by Calamares locale module
-          sudo chroot chroot apt-get install -y             tzdata locales keyboard-configuration console-setup             kbd locales-all 2>/dev/null || true
-
-          # Calamares installer - needs /proc /sys /dev mounted
-          sudo mount --bind /dev  chroot/dev  2>/dev/null || true
-          sudo mount --bind /proc chroot/proc 2>/dev/null || true
-          sudo mount --bind /sys  chroot/sys  2>/dev/null || true
-          sudo chroot chroot apt-get install -y --no-install-recommends calamares             && echo "Calamares installed" || echo "Calamares FAILED"
-          sudo chroot chroot apt-get install -y             qml-module-qtquick2 qml-module-qtquick-controls2             qml-module-qtquick-layouts python3-pyqt5             efibootmgr os-prober || true
-          sudo umount chroot/sys  2>/dev/null || true
-          sudo umount chroot/proc 2>/dev/null || true
-          sudo umount chroot/dev  2>/dev/null || true
-          # Verify
-          if [ -f chroot/usr/bin/calamares ]; then
-            echo "Calamares confirmed"
-          else
-            echo "Calamares not found"
-          fi
-
-          # Build tools needed for VBox guest modules
+          sudo chroot chroot apt-get install -y calamares \
+            && echo "Calamares OK" || echo "Calamares FAILED"
           sudo chroot chroot apt-get install -y \
-            dkms build-essential linux-headers-amd64 || true
+            qml-module-qtquick2 qml-module-qtquick-controls2 \
+            qml-module-qtquick-layouts python3-pyqt5 || true
 
-          # Dev and IT tools
           sudo chroot chroot apt-get install -y \
-            python3 python3-pip python3-venv \
-            python3-tk \
+            python3 python3-pip python3-venv python3-tk \
             python3-flask python3-flask-socketio \
             python3-requests python3-psutil \
             git vim nano curl wget \
@@ -133,7 +102,7 @@ jobs:
             htop neofetch tree \
             zip unzip p7zip-full \
             parted gparted rsync dosfstools \
-            smartmontools hdparm memtest86+ \
+            smartmontools hdparm \
             lshw dmidecode iotop iftop \
             wireshark-common tshark squashfs-tools
 
@@ -144,48 +113,35 @@ jobs:
           echo "All packages installed"
 
       - name: Configure system
-        run: |
-          sudo python3 build-system/scripts/configure-system.py
-          echo "System configured"
+        run: sudo python3 build-system/scripts/configure-system.py
 
-      - name: Configure Calamares installer
-        run: |
-          sudo python3 build-system/scripts/configure-calamares.py
-          echo "Calamares configured"
+      - name: Configure Calamares
+        run: sudo python3 build-system/scripts/configure-calamares.py
 
-      - name: Apply RIDOS branding and theme
-        run: |
-          sudo python3 build-system/scripts/apply-branding.py
-          echo "Branding applied"
+      - name: Apply branding
+        run: sudo python3 build-system/scripts/apply-branding.py
 
       - name: Install RIDOS core files
         run: |
-          sudo mkdir -p chroot/opt/ridos/bin
-          sudo mkdir -p chroot/usr/share/ridos
-          if [ -d ridos-core ] && ls ridos-core/*.py 2>/dev/null | head -1; then
-            sudo cp ridos-core/*.py chroot/opt/ridos/bin/
-            sudo chmod +x chroot/opt/ridos/bin/control_center.py 2>/dev/null || true
-          else
-            echo "ridos-core not found - skipping"
-          fi
-          sudo cp build-system/scripts/ai_features.py      chroot/opt/ridos/bin/ 2>/dev/null || true
+          sudo mkdir -p chroot/opt/ridos/bin chroot/usr/share/ridos
+          sudo cp ridos-core/*.py chroot/opt/ridos/bin/ 2>/dev/null || true
+          sudo cp build-system/scripts/ai_features.py chroot/opt/ridos/bin/ 2>/dev/null || true
           sudo cp build-system/scripts/dashboard_server.py chroot/opt/ridos/bin/ 2>/dev/null || true
           sudo cp build-system/scripts/ridos-dashboard.html chroot/opt/ridos/bin/ 2>/dev/null || true
-          sudo chmod +x chroot/opt/ridos/bin/*.py
-          # Copy GRUB install script to LIVE system
-          sudo cp build-system/scripts/ridos-grub-install.sh chroot/usr/local/bin/ridos-grub-install
-          sudo chmod +x chroot/usr/local/bin/ridos-grub-install
-          echo "GRUB helper installed to live system"
+          sudo chmod +x chroot/opt/ridos/bin/*.py 2>/dev/null || true
+          sudo cp build-system/scripts/ridos-grub-install.sh \
+               chroot/usr/local/bin/ridos-grub-install 2>/dev/null || true
+          sudo chmod +x chroot/usr/local/bin/ridos-grub-install 2>/dev/null || true
           sudo cp legal/LICENSE.txt legal/COPYRIGHT legal/CONTRIBUTORS.md \
-               chroot/usr/share/ridos/
-          sudo python3 build-system/scripts/install-ridos-files.py
+               chroot/usr/share/ridos/ 2>/dev/null || true
+          sudo python3 build-system/scripts/install-ridos-files.py 2>/dev/null || true
           echo "RIDOS files installed"
 
       - name: Build squashfs filesystem
         run: |
           sudo mksquashfs chroot filesystem.squashfs \
             -comp xz -e boot -noappend
-          echo "squashfs: $(du -sh filesystem.squashfs)"
+          echo "squashfs: $(du -sh filesystem.squashfs | cut -f1)"
 
       - name: Prepare ISO structure
         run: |
@@ -193,7 +149,6 @@ jobs:
           cp filesystem.squashfs iso/live/
           KERNEL=$(ls chroot/boot/vmlinuz-* 2>/dev/null | sort -V | tail -1)
           INITRD=$(ls chroot/boot/initrd.img-* 2>/dev/null | sort -V | tail -1)
-          echo "Kernel: $KERNEL  Initrd: $INITRD"
           cp "$KERNEL" iso/live/vmlinuz
           cp "$INITRD" iso/live/initrd
           python3 build-system/scripts/write-grub-config.py
@@ -221,7 +176,7 @@ jobs:
           xorriso -as mkisofs \
             -iso-level 3 \
             -full-iso9660-filenames \
-            -volid "RIDOS_OS_1.2" \
+            -volid "RIDOS_OS_1.1" \
             -publisher "RIDOS OS Project" \
             --grub2-mbr /usr/lib/grub/i386-pc/boot_hybrid.img \
             -partition_offset 16 \
@@ -238,34 +193,33 @@ jobs:
             -eltorito-alt-boot \
             -e --interval:appended_partition_2:all:: \
             -no-emul-boot \
-            -o ridos-os-1.2.0-SmartDog-x86_64.iso \
+            -o ridos-os-1.1.0-Baghdad-x86_64.iso \
             -graft-points \
               "/boot/grub/bios.img=bios.img" \
               "/=iso"
 
-          ls -lh ridos-os-1.2.0-SmartDog-x86_64.iso
-          file ridos-os-1.2.0-SmartDog-x86_64.iso
-          md5sum    ridos-os-1.2.0-SmartDog-x86_64.iso > ridos-os-1.2.0-SmartDog-x86_64.iso.md5
-          sha256sum ridos-os-1.2.0-SmartDog-x86_64.iso > ridos-os-1.2.0-SmartDog-x86_64.iso.sha256
+          ls -lh ridos-os-1.1.0-Baghdad-x86_64.iso
+          md5sum    ridos-os-1.1.0-Baghdad-x86_64.iso > ridos-os-1.1.0-Baghdad-x86_64.iso.md5
+          sha256sum ridos-os-1.1.0-Baghdad-x86_64.iso > ridos-os-1.1.0-Baghdad-x86_64.iso.sha256
           echo "ISO ready!"
 
       - name: Upload ISO artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RIDOS-OS-1.2.0-SmartDog
+          name: RIDOS-OS-1.1.0-Baghdad
           path: |
-            ridos-os-1.2.0-SmartDog-x86_64.iso
-            ridos-os-1.2.0-SmartDog-x86_64.iso.md5
-            ridos-os-1.2.0-SmartDog-x86_64.iso.sha256
+            ridos-os-1.1.0-Baghdad-x86_64.iso
+            ridos-os-1.1.0-Baghdad-x86_64.iso.md5
+            ridos-os-1.1.0-Baghdad-x86_64.iso.sha256
           retention-days: 30
 
       - name: Create GitHub Release on tag
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           gh release create "${{ github.ref_name }}" \
-            ridos-os-1.2.0-SmartDog-x86_64.iso \
-            ridos-os-1.2.0-SmartDog-x86_64.iso.md5 \
-            --title "RIDOS OS ${{ github.ref_name }} Smart Dog" \
-            --notes "RIDOS OS v1.2.0 Smart Dog - AI-Powered Linux. Login: ridos/ridos. GPL v3."
+            ridos-os-1.1.0-Baghdad-x86_64.iso \
+            ridos-os-1.1.0-Baghdad-x86_64.iso.md5 \
+            --title "RIDOS OS ${{ github.ref_name }} Baghdad" \
+            --notes "RIDOS OS v1.1.0 Baghdad. Login: ridos/ridos. GPL v3."
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
